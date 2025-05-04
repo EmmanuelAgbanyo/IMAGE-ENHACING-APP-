@@ -2,12 +2,13 @@
 
 import type React from "react"
 
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useCallback } from "react"
 import { Slider } from "@/components/ui/slider"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
+import { Progress } from "@/components/ui/progress"
 import {
   Download,
   RefreshCw,
@@ -25,6 +26,7 @@ import {
   Paintbrush,
   Moon,
   CircleDot,
+  Loader2,
 } from "lucide-react"
 
 type FilterPreset = {
@@ -72,10 +74,14 @@ export default function ImageEnhancer() {
   const originalImageRef = useRef<HTMLImageElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isImageLoaded, setIsImageLoaded] = useState(false)
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
   const [imageSource, setImageSource] = useState<string>(
     "https://hebbkx1anhila5yf.public.blob.vercel-storage.com/1000449926-HtOmgMeznPeLQn6OqZM5piXufPybsy.png",
   )
   const [hasImage, setHasImage] = useState(true)
+  const [imageSize, setImageSize] = useState({ width: 0, height: 0 })
+  const [renderKey, setRenderKey] = useState(0) // Used to force re-render
 
   // Filter presets
   const filterPresets: FilterPreset[] = [
@@ -209,21 +215,104 @@ export default function ImageEnhancer() {
     setVignette(preset.settings.vignette)
   }
 
-  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  // Resize image to a reasonable size while maintaining aspect ratio
+  const resizeImage = (file: File): Promise<string> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        const img = new Image()
+        img.onload = () => {
+          // Set max dimensions
+          const MAX_WIDTH = 1200
+          const MAX_HEIGHT = 1200
+
+          let width = img.width
+          let height = img.height
+
+          // Calculate new dimensions
+          if (width > height) {
+            if (width > MAX_WIDTH) {
+              height = Math.round((height * MAX_WIDTH) / width)
+              width = MAX_WIDTH
+            }
+          } else {
+            if (height > MAX_HEIGHT) {
+              width = Math.round((width * MAX_HEIGHT) / height)
+              height = MAX_HEIGHT
+            }
+          }
+
+          // Create canvas for resizing
+          const canvas = document.createElement("canvas")
+          canvas.width = width
+          canvas.height = height
+
+          // Draw resized image
+          const ctx = canvas.getContext("2d")
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height)
+
+            // Get resized image as data URL
+            const resizedDataUrl = canvas.toDataURL("image/jpeg", 0.9)
+            setImageSize({ width, height })
+            resolve(resizedDataUrl)
+          } else {
+            // If context fails, return original
+            resolve(e.target?.result as string)
+          }
+        }
+        img.src = e.target?.result as string
+      }
+      reader.readAsDataURL(file)
+    })
+  }
+
+  const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
 
-    const reader = new FileReader()
-    reader.onload = (e) => {
-      const result = e.target?.result as string
-      if (result) {
-        setImageSource(result)
+    try {
+      setIsUploading(true)
+      setUploadProgress(0)
+
+      // Clear previous image reference to force reload
+      originalImageRef.current = null
+
+      // Simulate progress
+      const progressInterval = setInterval(() => {
+        setUploadProgress((prev) => {
+          const newProgress = prev + 5
+          return newProgress < 90 ? newProgress : prev
+        })
+      }, 50)
+
+      // Resize image
+      const resizedImage = await resizeImage(file)
+
+      clearInterval(progressInterval)
+      setUploadProgress(100)
+
+      // Short delay to show 100% progress
+      setTimeout(() => {
+        setImageSource(resizedImage)
         setHasImage(true)
-        setIsImageLoaded(false) // Reset to trigger loading indicator
-        resetFilters() // Reset filters for new image
-      }
+        resetFilters()
+        setIsUploading(false)
+
+        // Create a new image to ensure it loads properly
+        const img = new Image()
+        img.crossOrigin = "anonymous"
+        img.onload = () => {
+          originalImageRef.current = img
+          setIsImageLoaded(true)
+          setRenderKey((prev) => prev + 1) // Force re-render
+        }
+        img.src = resizedImage
+      }, 300)
+    } catch (error) {
+      console.error("Error uploading image:", error)
+      setIsUploading(false)
     }
-    reader.readAsDataURL(file)
   }
 
   const removeImage = () => {
@@ -241,7 +330,7 @@ export default function ImageEnhancer() {
   }
 
   // Apply vignette effect to canvas
-  const applyVignette = (ctx: CanvasRenderingContext2D, amount: number) => {
+  const applyVignette = useCallback((ctx: CanvasRenderingContext2D, amount: number) => {
     if (amount <= 0) return
 
     const canvas = ctx.canvas
@@ -269,10 +358,10 @@ export default function ImageEnhancer() {
     ctx.globalCompositeOperation = "multiply"
     ctx.fillRect(0, 0, w, h)
     ctx.globalCompositeOperation = "source-over"
-  }
+  }, [])
 
   // Apply sharpen effect
-  const applySharpen = (ctx: CanvasRenderingContext2D, amount: number) => {
+  const applySharpen = useCallback((ctx: CanvasRenderingContext2D, amount: number) => {
     if (amount <= 0 || !originalImageRef.current) return
 
     const canvas = ctx.canvas
@@ -321,10 +410,10 @@ export default function ImageEnhancer() {
 
     // Draw the sharpened image back to the main canvas
     ctx.drawImage(tempCanvas, 0, 0)
-  }
+  }, [])
 
   // Apply exposure adjustment
-  const applyExposure = (ctx: CanvasRenderingContext2D, amount: number) => {
+  const applyExposure = useCallback((ctx: CanvasRenderingContext2D, amount: number) => {
     if (amount === 100 || !originalImageRef.current) return
 
     const canvas = ctx.canvas
@@ -360,93 +449,77 @@ export default function ImageEnhancer() {
 
     // Draw the adjusted image back to the main canvas
     ctx.drawImage(tempCanvas, 0, 0)
-  }
+  }, [])
 
   // Apply highlights and shadows adjustments
-  const applyHighlightsShadows = (ctx: CanvasRenderingContext2D, highlightsValue: number, shadowsValue: number) => {
-    if ((highlightsValue === 100 && shadowsValue === 100) || !originalImageRef.current) return
+  const applyHighlightsShadows = useCallback(
+    (ctx: CanvasRenderingContext2D, highlightsValue: number, shadowsValue: number) => {
+      if ((highlightsValue === 100 && shadowsValue === 100) || !originalImageRef.current) return
 
-    const canvas = ctx.canvas
-    const w = canvas.width
-    const h = canvas.height
+      const canvas = ctx.canvas
+      const w = canvas.width
+      const h = canvas.height
 
-    // Create a temporary canvas
-    const tempCanvas = document.createElement("canvas")
-    tempCanvas.width = w
-    tempCanvas.height = h
-    const tempCtx = tempCanvas.getContext("2d")
+      // Create a temporary canvas
+      const tempCanvas = document.createElement("canvas")
+      tempCanvas.width = w
+      tempCanvas.height = h
+      const tempCtx = tempCanvas.getContext("2d")
 
-    if (!tempCtx) return
+      if (!tempCtx) return
 
-    // Draw the current state
-    tempCtx.drawImage(canvas, 0, 0)
+      // Draw the current state
+      tempCtx.drawImage(canvas, 0, 0)
 
-    // Get image data
-    const imageData = tempCtx.getImageData(0, 0, w, h)
-    const data = imageData.data
+      // Get image data
+      const imageData = tempCtx.getImageData(0, 0, w, h)
+      const data = imageData.data
 
-    // Calculate adjustment factors
-    const highlightsFactor = highlightsValue / 100
-    const shadowsFactor = shadowsValue / 100
+      // Calculate adjustment factors
+      const highlightsFactor = highlightsValue / 100
+      const shadowsFactor = shadowsValue / 100
 
-    // Apply highlights and shadows adjustments
-    for (let i = 0; i < data.length; i += 4) {
-      // Calculate luminance (simplified)
-      const luminance = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114) / 255
+      // Apply highlights and shadows adjustments
+      for (let i = 0; i < data.length; i += 4) {
+        // Calculate luminance (simplified)
+        const luminance = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114) / 255
 
-      // Determine if pixel is in highlights or shadows
-      let factor
-      if (luminance > 0.5) {
-        // Highlights
-        factor = 1 + (highlightsFactor - 1) * (luminance - 0.5) * 2
-      } else {
-        // Shadows
-        factor = shadowsFactor * luminance * 2
+        // Determine if pixel is in highlights or shadows
+        let factor
+        if (luminance > 0.5) {
+          // Highlights
+          factor = 1 + (highlightsFactor - 1) * (luminance - 0.5) * 2
+        } else {
+          // Shadows
+          factor = shadowsFactor * luminance * 2
+        }
+
+        // Apply adjustment
+        data[i] = Math.min(255, Math.max(0, data[i] * factor)) // R
+        data[i + 1] = Math.min(255, Math.max(0, data[i + 1] * factor)) // G
+        data[i + 2] = Math.min(255, Math.max(0, data[i + 2] * factor)) // B
       }
 
-      // Apply adjustment
-      data[i] = Math.min(255, Math.max(0, data[i] * factor)) // R
-      data[i + 1] = Math.min(255, Math.max(0, data[i + 1] * factor)) // G
-      data[i + 2] = Math.min(255, Math.max(0, data[i + 2] * factor)) // B
-    }
+      tempCtx.putImageData(imageData, 0, 0)
 
-    tempCtx.putImageData(imageData, 0, 0)
+      // Draw the adjusted image back to the main canvas
+      ctx.drawImage(tempCanvas, 0, 0)
+    },
+    [],
+  )
 
-    // Draw the adjusted image back to the main canvas
-    ctx.drawImage(tempCanvas, 0, 0)
-  }
-
-  useEffect(() => {
-    if (!hasImage) return
-
-    const canvas = canvasRef.current
-    if (!canvas) return
-
-    const ctx = canvas.getContext("2d")
-    if (!ctx) return
-
-    const img = new Image()
-    img.crossOrigin = "anonymous"
-    img.src = imageSource
-
-    img.onload = () => {
-      // Store the original image for reference
-      originalImageRef.current = img
-      setIsImageLoaded(true)
-
-      // Set canvas dimensions to match image
-      canvas.width = img.width
-      canvas.height = img.height
-
-      // Clear canvas
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
-
+  // Render image with all effects applied
+  const renderWithEffects = useCallback(
+    (ctx: CanvasRenderingContext2D, img: HTMLImageElement) => {
       // Apply basic filters
       ctx.filter = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%) blur(${blur}px) sepia(${sepia}%) hue-rotate(${hue}deg) grayscale(${grayscale}%) invert(${invert}%)`
 
+      // Clear canvas
+      ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height)
+
       // Handle rotation and flipping
       ctx.save()
-      ctx.translate(canvas.width / 2, canvas.height / 2)
+      ctx.translate(ctx.canvas.width / 2, ctx.canvas.height / 2)
 
       // Apply rotation
       ctx.rotate((rotation * Math.PI) / 180)
@@ -465,8 +538,68 @@ export default function ImageEnhancer() {
       applyHighlightsShadows(ctx, highlights, shadows)
       applySharpen(ctx, sharpen)
       applyVignette(ctx, vignette)
+    },
+    [
+      brightness,
+      contrast,
+      saturation,
+      blur,
+      rotation,
+      sepia,
+      hue,
+      grayscale,
+      invert,
+      exposure,
+      highlights,
+      shadows,
+      vignette,
+      sharpen,
+      flipHorizontal,
+      flipVertical,
+      applyExposure,
+      applyHighlightsShadows,
+      applySharpen,
+      applyVignette,
+    ],
+  )
+
+  const renderImage = useCallback(() => {
+    if (!hasImage) return
+
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
+
+    const img = originalImageRef.current
+    if (!img) {
+      // Load the image if it's not already loaded
+      const newImg = new Image()
+      newImg.crossOrigin = "anonymous"
+      newImg.src = imageSource
+
+      newImg.onload = () => {
+        // Store the original image for reference
+        originalImageRef.current = newImg
+        setIsImageLoaded(true)
+
+        // Set canvas dimensions to match image
+        canvas.width = newImg.width
+        canvas.height = newImg.height
+
+        // Render the image with effects
+        renderWithEffects(ctx, newImg)
+      }
+    } else {
+      // Image is already loaded, just render with effects
+      canvas.width = img.width
+      canvas.height = img.height
+      renderWithEffects(ctx, img)
     }
   }, [
+    hasImage,
+    imageSource,
     brightness,
     contrast,
     saturation,
@@ -483,9 +616,14 @@ export default function ImageEnhancer() {
     sharpen,
     flipHorizontal,
     flipVertical,
-    imageSource,
-    hasImage,
+    renderKey,
+    renderWithEffects,
   ])
+
+  // Effect to render the image when parameters change
+  useEffect(() => {
+    renderImage()
+  }, [renderImage])
 
   const downloadImage = () => {
     const canvas = canvasRef.current
@@ -519,29 +657,53 @@ export default function ImageEnhancer() {
               <div className="flex flex-col items-center justify-center h-64 w-full border-2 border-dashed border-gray-300 rounded-lg p-6">
                 <Upload size={48} className="text-gray-400 mb-4" />
                 <p className="text-gray-500 text-center mb-4">No image selected</p>
-                <Button onClick={triggerFileInput} variant="outline">
+                <Button onClick={triggerFileInput} variant="outline" disabled={isUploading}>
                   Upload an Image
                 </Button>
               </div>
             )}
           </div>
 
+          {isUploading && (
+            <div className="mb-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span className="text-sm">Processing image... {uploadProgress}%</span>
+              </div>
+              <Progress value={uploadProgress} className="h-2" />
+            </div>
+          )}
+
           <div className="flex justify-between mt-4 gap-2 flex-wrap">
             <input type="file" ref={fileInputRef} onChange={handleImageUpload} accept="image/*" className="hidden" />
 
-            <Button onClick={triggerFileInput} variant="outline" className="flex items-center gap-2">
+            <Button
+              onClick={triggerFileInput}
+              variant="outline"
+              className="flex items-center gap-2"
+              disabled={isUploading}
+            >
               <Upload size={16} />
               {hasImage ? "Change Image" : "Upload Image"}
             </Button>
 
             {hasImage && (
               <>
-                <Button onClick={removeImage} variant="destructive" className="flex items-center gap-2">
+                <Button
+                  onClick={removeImage}
+                  variant="destructive"
+                  className="flex items-center gap-2"
+                  disabled={isUploading}
+                >
                   <Trash2 size={16} />
                   Remove Image
                 </Button>
 
-                <Button onClick={downloadImage} className="flex items-center gap-2" disabled={!isImageLoaded}>
+                <Button
+                  onClick={downloadImage}
+                  className="flex items-center gap-2"
+                  disabled={!isImageLoaded || isUploading}
+                >
                   <Download size={16} />
                   Download
                 </Button>
@@ -560,12 +722,19 @@ export default function ImageEnhancer() {
                     size="sm"
                     onClick={() => applyPreset(preset)}
                     className="flex items-center gap-1"
+                    disabled={isUploading}
                   >
                     {preset.icon}
                     {preset.name}
                   </Button>
                 ))}
               </div>
+            </div>
+          )}
+
+          {imageSize.width > 0 && (
+            <div className="mt-4 text-sm text-gray-500">
+              Image dimensions: {imageSize.width} × {imageSize.height}
             </div>
           )}
         </div>
@@ -578,7 +747,7 @@ export default function ImageEnhancer() {
               size="sm"
               onClick={resetFilters}
               className="flex items-center gap-1"
-              disabled={!hasImage}
+              disabled={!hasImage || isUploading}
             >
               <RefreshCw size={14} />
               Reset All
@@ -612,7 +781,7 @@ export default function ImageEnhancer() {
                   min={0}
                   max={200}
                   step={1}
-                  disabled={!hasImage}
+                  disabled={!hasImage || isUploading}
                   onValueChange={(values) => {
                     if (values && values.length > 0) {
                       setBrightness(values[0])
@@ -631,7 +800,7 @@ export default function ImageEnhancer() {
                   min={0}
                   max={200}
                   step={1}
-                  disabled={!hasImage}
+                  disabled={!hasImage || isUploading}
                   onValueChange={(values) => {
                     if (values && values.length > 0) {
                       setContrast(values[0])
@@ -650,7 +819,7 @@ export default function ImageEnhancer() {
                   min={0}
                   max={200}
                   step={1}
-                  disabled={!hasImage}
+                  disabled={!hasImage || isUploading}
                   onValueChange={(values) => {
                     if (values && values.length > 0) {
                       setSaturation(values[0])
@@ -669,7 +838,7 @@ export default function ImageEnhancer() {
                   min={0}
                   max={10}
                   step={0.1}
-                  disabled={!hasImage}
+                  disabled={!hasImage || isUploading}
                   onValueChange={(values) => {
                     if (values && values.length > 0) {
                       setBlur(values[0])
@@ -688,7 +857,7 @@ export default function ImageEnhancer() {
                   min={0}
                   max={360}
                   step={1}
-                  disabled={!hasImage}
+                  disabled={!hasImage || isUploading}
                   onValueChange={(values) => {
                     if (values && values.length > 0) {
                       setRotation(values[0])
@@ -703,13 +872,18 @@ export default function ImageEnhancer() {
                     id="flip-h"
                     checked={flipHorizontal}
                     onCheckedChange={setFlipHorizontal}
-                    disabled={!hasImage}
+                    disabled={!hasImage || isUploading}
                   />
                   <Label htmlFor="flip-h">Flip Horizontal</Label>
                 </div>
 
                 <div className="flex items-center space-x-2">
-                  <Switch id="flip-v" checked={flipVertical} onCheckedChange={setFlipVertical} disabled={!hasImage} />
+                  <Switch
+                    id="flip-v"
+                    checked={flipVertical}
+                    onCheckedChange={setFlipVertical}
+                    disabled={!hasImage || isUploading}
+                  />
                   <Label htmlFor="flip-v">Flip Vertical</Label>
                 </div>
               </div>
@@ -726,7 +900,7 @@ export default function ImageEnhancer() {
                   min={0}
                   max={360}
                   step={1}
-                  disabled={!hasImage}
+                  disabled={!hasImage || isUploading}
                   onValueChange={(values) => {
                     if (values && values.length > 0) {
                       setHue(values[0])
@@ -745,7 +919,7 @@ export default function ImageEnhancer() {
                   min={0}
                   max={100}
                   step={1}
-                  disabled={!hasImage}
+                  disabled={!hasImage || isUploading}
                   onValueChange={(values) => {
                     if (values && values.length > 0) {
                       setGrayscale(values[0])
@@ -764,7 +938,7 @@ export default function ImageEnhancer() {
                   min={0}
                   max={100}
                   step={1}
-                  disabled={!hasImage}
+                  disabled={!hasImage || isUploading}
                   onValueChange={(values) => {
                     if (values && values.length > 0) {
                       setInvert(values[0])
@@ -783,7 +957,7 @@ export default function ImageEnhancer() {
                   min={0}
                   max={100}
                   step={1}
-                  disabled={!hasImage}
+                  disabled={!hasImage || isUploading}
                   onValueChange={(values) => {
                     if (values && values.length > 0) {
                       setSepia(values[0])
@@ -802,7 +976,7 @@ export default function ImageEnhancer() {
                   min={50}
                   max={150}
                   step={1}
-                  disabled={!hasImage}
+                  disabled={!hasImage || isUploading}
                   onValueChange={(values) => {
                     if (values && values.length > 0) {
                       setExposure(values[0])
@@ -823,7 +997,7 @@ export default function ImageEnhancer() {
                   min={50}
                   max={150}
                   step={1}
-                  disabled={!hasImage}
+                  disabled={!hasImage || isUploading}
                   onValueChange={(values) => {
                     if (values && values.length > 0) {
                       setHighlights(values[0])
@@ -842,7 +1016,7 @@ export default function ImageEnhancer() {
                   min={50}
                   max={150}
                   step={1}
-                  disabled={!hasImage}
+                  disabled={!hasImage || isUploading}
                   onValueChange={(values) => {
                     if (values && values.length > 0) {
                       setShadows(values[0])
@@ -861,7 +1035,7 @@ export default function ImageEnhancer() {
                   min={0}
                   max={100}
                   step={1}
-                  disabled={!hasImage}
+                  disabled={!hasImage || isUploading}
                   onValueChange={(values) => {
                     if (values && values.length > 0) {
                       setVignette(values[0])
@@ -880,7 +1054,7 @@ export default function ImageEnhancer() {
                   min={0}
                   max={100}
                   step={1}
-                  disabled={!hasImage}
+                  disabled={!hasImage || isUploading}
                   onValueChange={(values) => {
                     if (values && values.length > 0) {
                       setSharpen(values[0])
