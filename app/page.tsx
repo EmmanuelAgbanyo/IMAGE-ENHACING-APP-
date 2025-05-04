@@ -27,6 +27,10 @@ import {
   Moon,
   CircleDot,
   Loader2,
+  User,
+  Eye,
+  Aperture,
+  Thermometer,
 } from "lucide-react"
 
 type FilterPreset = {
@@ -68,6 +72,12 @@ export default function ImageEnhancer() {
   const [sharpen, setSharpen] = useState(0)
   const [flipHorizontal, setFlipHorizontal] = useState(false)
   const [flipVertical, setFlipVertical] = useState(false)
+
+  // Portrait enhancements
+  const [skinSoftening, setSkinSoftening] = useState(0)
+  const [eyeEnhancement, setEyeEnhancement] = useState(0)
+  const [portraitBlur, setPortraitBlur] = useState(0)
+  const [warmth, setWarmth] = useState(0)
 
   // Canvas and image refs
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -181,6 +191,22 @@ export default function ImageEnhancer() {
         vignette: 0,
       },
     },
+    {
+      name: "Portrait",
+      icon: <User size={16} />,
+      settings: {
+        brightness: 105,
+        contrast: 110,
+        saturation: 105,
+        blur: 0,
+        hue: 5,
+        grayscale: 0,
+        invert: 0,
+        sepia: 10,
+        exposure: 105,
+        vignette: 15,
+      },
+    },
   ]
 
   const resetFilters = () => {
@@ -200,6 +226,10 @@ export default function ImageEnhancer() {
     setSharpen(0)
     setFlipHorizontal(false)
     setFlipVertical(false)
+    setSkinSoftening(0)
+    setEyeEnhancement(0)
+    setPortraitBlur(0)
+    setWarmth(0)
   }
 
   const applyPreset = (preset: FilterPreset) => {
@@ -508,6 +538,298 @@ export default function ImageEnhancer() {
     [],
   )
 
+  // Apply skin softening effect
+  const applySkinSoftening = useCallback((ctx: CanvasRenderingContext2D, amount: number) => {
+    if (amount <= 0 || !originalImageRef.current) return
+
+    const canvas = ctx.canvas
+    const w = canvas.width
+    const h = canvas.height
+
+    // Create a temporary canvas for the skin softening effect
+    const tempCanvas = document.createElement("canvas")
+    tempCanvas.width = w
+    tempCanvas.height = h
+    const tempCtx = tempCanvas.getContext("2d")
+
+    if (!tempCtx) return
+
+    // Draw the current state
+    tempCtx.drawImage(canvas, 0, 0)
+
+    // Apply a subtle blur for skin softening
+    const imageData = tempCtx.getImageData(0, 0, w, h)
+    const data = imageData.data
+
+    // Simple box blur algorithm with strength based on amount
+    const strength = Math.floor((amount / 100) * 10) + 1
+    const iterations = Math.max(1, Math.floor(amount / 25))
+
+    for (let iter = 0; iter < iterations; iter++) {
+      const tempData = new Uint8ClampedArray(data)
+
+      for (let y = strength; y < h - strength; y++) {
+        for (let x = strength; x < w - strength; x++) {
+          const idx = (y * w + x) * 4
+
+          // For each color channel
+          for (let c = 0; c < 3; c++) {
+            let sum = 0
+            let count = 0
+
+            // Sample nearby pixels
+            for (let dy = -strength; dy <= strength; dy += strength) {
+              for (let dx = -strength; dx <= strength; dx += strength) {
+                const sampleIdx = ((y + dy) * w + (x + dx)) * 4
+                sum += tempData[sampleIdx + c]
+                count++
+              }
+            }
+
+            // Apply weighted average (keep some of the original for detail)
+            const blendFactor = amount / 100
+            data[idx + c] = Math.round(data[idx + c] * (1 - blendFactor) + (sum / count) * blendFactor)
+          }
+        }
+      }
+    }
+
+    tempCtx.putImageData(imageData, 0, 0)
+
+    // Draw the softened image back to the main canvas
+    ctx.drawImage(tempCanvas, 0, 0)
+  }, [])
+
+  // Apply eye enhancement
+  const applyEyeEnhancement = useCallback((ctx: CanvasRenderingContext2D, amount: number) => {
+    if (amount <= 0 || !originalImageRef.current) return
+
+    const canvas = ctx.canvas
+    const w = canvas.width
+    const h = canvas.height
+
+    // Create a temporary canvas
+    const tempCanvas = document.createElement("canvas")
+    tempCanvas.width = w
+    tempCanvas.height = h
+    const tempCtx = tempCanvas.getContext("2d")
+
+    if (!tempCtx) return
+
+    // Draw the current state
+    tempCtx.drawImage(canvas, 0, 0)
+
+    // Get image data
+    const imageData = tempCtx.getImageData(0, 0, w, h)
+    const data = imageData.data
+
+    // Apply a simple contrast boost to make eyes pop
+    const factor = 1 + (amount / 100) * 0.5
+
+    for (let i = 0; i < data.length; i += 4) {
+      // Calculate luminance
+      const luminance = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114) / 255
+
+      // Apply enhancement primarily to mid-tones
+      const enhanceFactor = factor * (1 - Math.abs(luminance - 0.5) * 2)
+
+      // Apply enhancement
+      if (enhanceFactor > 1) {
+        data[i] = Math.min(255, data[i] * enhanceFactor) // R
+        data[i + 1] = Math.min(255, data[i + 1] * enhanceFactor) // G
+        data[i + 2] = Math.min(255, data[i + 2] * enhanceFactor) // B
+      }
+    }
+
+    tempCtx.putImageData(imageData, 0, 0)
+
+    // Draw the enhanced image back to the main canvas
+    ctx.drawImage(tempCanvas, 0, 0)
+  }, [])
+
+  // Apply portrait background blur
+  const applyPortraitBlur = useCallback((ctx: CanvasRenderingContext2D, amount: number) => {
+    if (amount <= 0 || !originalImageRef.current) return
+
+    const canvas = ctx.canvas
+    const w = canvas.width
+    const h = canvas.height
+
+    // Create two temporary canvases - one for the original and one for the blurred version
+    const originalCanvas = document.createElement("canvas")
+    originalCanvas.width = w
+    originalCanvas.height = h
+    const originalCtx = originalCanvas.getContext("2d")
+
+    const blurredCanvas = document.createElement("canvas")
+    blurredCanvas.width = w
+    blurredCanvas.height = h
+    const blurredCtx = blurredCanvas.getContext("2d")
+
+    if (!originalCtx || !blurredCtx) return
+
+    // Draw the current state to both canvases
+    originalCtx.drawImage(canvas, 0, 0)
+    blurredCtx.drawImage(canvas, 0, 0)
+
+    // Apply a strong Gaussian-like blur to the blurred canvas
+    const blurStrength = Math.ceil((amount / 100) * 20) // Up to 20px blur
+
+    // Apply multiple passes of box blur to approximate Gaussian blur
+    for (let i = 0; i < 3; i++) {
+      const imageData = blurredCtx.getImageData(0, 0, w, h)
+      const data = imageData.data
+      const tempData = new Uint8ClampedArray(data)
+
+      // Horizontal pass
+      for (let y = 0; y < h; y++) {
+        for (let x = blurStrength; x < w - blurStrength; x++) {
+          const idx = (y * w + x) * 4
+
+          for (let c = 0; c < 3; c++) {
+            let sum = 0
+            for (let bx = -blurStrength; bx <= blurStrength; bx++) {
+              const sampleIdx = (y * w + (x + bx)) * 4
+              sum += tempData[sampleIdx + c]
+            }
+            data[idx + c] = sum / (blurStrength * 2 + 1)
+          }
+        }
+      }
+
+      // Update temp data for vertical pass
+      for (let i = 0; i < data.length; i++) {
+        tempData[i] = data[i]
+      }
+
+      // Vertical pass
+      for (let x = 0; x < w; x++) {
+        for (let y = blurStrength; y < h - blurStrength; y++) {
+          const idx = (y * w + x) * 4
+
+          for (let c = 0; c < 3; c++) {
+            let sum = 0
+            for (let by = -blurStrength; by <= blurStrength; by++) {
+              const sampleIdx = ((y + by) * w + x) * 4
+              sum += tempData[sampleIdx + c]
+            }
+            data[idx + c] = sum / (blurStrength * 2 + 1)
+          }
+        }
+      }
+
+      blurredCtx.putImageData(imageData, 0, 0)
+    }
+
+    // Create a mask for the subject (center-weighted elliptical mask)
+    const maskCanvas = document.createElement("canvas")
+    maskCanvas.width = w
+    maskCanvas.height = h
+    const maskCtx = maskCanvas.getContext("2d")
+
+    if (!maskCtx) return
+
+    // Clear the mask canvas
+    maskCtx.clearRect(0, 0, w, h)
+
+    // Create an elliptical gradient for the mask
+    const centerX = w / 2
+    const centerY = h / 2
+    const radiusX = w * 0.35 // Horizontal radius - adjust for wider/narrower subject
+    const radiusY = h * 0.45 // Vertical radius - adjust for taller/shorter subject
+
+    // Draw the elliptical mask
+    maskCtx.fillStyle = "black"
+    maskCtx.fillRect(0, 0, w, h)
+
+    // Create elliptical mask with soft edges
+    maskCtx.save()
+    maskCtx.globalCompositeOperation = "destination-out"
+
+    // Create radial gradient for soft edges
+    const gradient = maskCtx.createRadialGradient(
+      centerX,
+      centerY,
+      Math.min(radiusX, radiusY) * 0.7, // Inner circle
+      centerX,
+      centerY,
+      Math.max(radiusX, radiusY) * 1.3, // Outer circle
+    )
+
+    gradient.addColorStop(0, "rgba(0,0,0,1)") // Fully transparent in center (subject)
+    gradient.addColorStop(0.6, "rgba(0,0,0,0.8)") // Start of transition
+    gradient.addColorStop(1, "rgba(0,0,0,0)") // Fully opaque at edge (background)
+
+    // Draw ellipse with gradient
+    maskCtx.fillStyle = gradient
+    maskCtx.beginPath()
+    maskCtx.ellipse(centerX, centerY, radiusX * 1.3, radiusY * 1.3, 0, 0, Math.PI * 2)
+    maskCtx.fill()
+    maskCtx.restore()
+
+    // Now composite the original and blurred images using the mask
+    ctx.clearRect(0, 0, w, h)
+
+    // First draw the blurred version
+    ctx.drawImage(blurredCanvas, 0, 0)
+
+    // Then draw the original version with the mask
+    ctx.globalCompositeOperation = "destination-out"
+    ctx.drawImage(maskCanvas, 0, 0)
+    ctx.globalCompositeOperation = "source-over"
+    ctx.drawImage(originalCanvas, 0, 0)
+
+    // Adjust the opacity of the effect based on amount
+    const effectOpacity = amount / 100
+    ctx.globalAlpha = effectOpacity
+    ctx.drawImage(blurredCanvas, 0, 0)
+    ctx.globalAlpha = 1.0
+  }, [])
+
+  // Apply warmth adjustment (for skin tones)
+  const applyWarmth = useCallback((ctx: CanvasRenderingContext2D, amount: number) => {
+    if (amount === 0 || !originalImageRef.current) return
+
+    const canvas = ctx.canvas
+    const w = canvas.width
+    const h = canvas.height
+
+    // Create a temporary canvas
+    const tempCanvas = document.createElement("canvas")
+    tempCanvas.width = w
+    tempCanvas.height = h
+    const tempCtx = tempCanvas.getContext("2d")
+
+    if (!tempCtx) return
+
+    // Draw the current state
+    tempCtx.drawImage(canvas, 0, 0)
+
+    // Get image data
+    const imageData = tempCtx.getImageData(0, 0, w, h)
+    const data = imageData.data
+
+    // Calculate warmth adjustment factors
+    const factor = amount / 100
+
+    // Apply warmth adjustment (increase red, decrease blue)
+    for (let i = 0; i < data.length; i += 4) {
+      // Increase red channel
+      data[i] = Math.min(255, data[i] + factor * 15)
+
+      // Slightly increase green for a natural look
+      data[i + 1] = Math.min(255, data[i + 1] + factor * 5)
+
+      // Decrease blue channel
+      data[i + 2] = Math.max(0, data[i + 2] - factor * 10)
+    }
+
+    tempCtx.putImageData(imageData, 0, 0)
+
+    // Draw the warmed image back to the main canvas
+    ctx.drawImage(tempCanvas, 0, 0)
+  }, [])
+
   // Render image with all effects applied
   const renderWithEffects = useCallback(
     (ctx: CanvasRenderingContext2D, img: HTMLImageElement) => {
@@ -538,6 +860,14 @@ export default function ImageEnhancer() {
       applyHighlightsShadows(ctx, highlights, shadows)
       applySharpen(ctx, sharpen)
       applyVignette(ctx, vignette)
+
+      // Apply portrait enhancements if any are active
+      if (skinSoftening > 0 || eyeEnhancement > 0 || portraitBlur > 0 || warmth > 0) {
+        applySkinSoftening(ctx, skinSoftening)
+        applyEyeEnhancement(ctx, eyeEnhancement)
+        applyWarmth(ctx, warmth)
+        applyPortraitBlur(ctx, portraitBlur)
+      }
     },
     [
       brightness,
@@ -560,6 +890,14 @@ export default function ImageEnhancer() {
       applyHighlightsShadows,
       applySharpen,
       applyVignette,
+      skinSoftening,
+      eyeEnhancement,
+      portraitBlur,
+      warmth,
+      applySkinSoftening,
+      applyEyeEnhancement,
+      applyPortraitBlur,
+      applyWarmth,
     ],
   )
 
@@ -618,6 +956,10 @@ export default function ImageEnhancer() {
     flipVertical,
     renderKey,
     renderWithEffects,
+    skinSoftening,
+    eyeEnhancement,
+    portraitBlur,
+    warmth,
   ])
 
   // Effect to render the image when parameters change
@@ -755,7 +1097,7 @@ export default function ImageEnhancer() {
           </div>
 
           <Tabs defaultValue="basic" className="w-full">
-            <TabsList className="grid grid-cols-3 mb-4">
+            <TabsList className="grid grid-cols-4 mb-4">
               <TabsTrigger value="basic" className="flex items-center gap-1">
                 <Sliders size={14} />
                 Basic
@@ -767,6 +1109,10 @@ export default function ImageEnhancer() {
               <TabsTrigger value="effects" className="flex items-center gap-1">
                 <Layers size={14} />
                 Effects
+              </TabsTrigger>
+              <TabsTrigger value="portrait" className="flex items-center gap-1">
+                <User size={14} />
+                Portrait
               </TabsTrigger>
             </TabsList>
 
@@ -1058,6 +1404,84 @@ export default function ImageEnhancer() {
                   onValueChange={(values) => {
                     if (values && values.length > 0) {
                       setSharpen(values[0])
+                    }
+                  }}
+                />
+              </div>
+            </TabsContent>
+
+            <TabsContent value="portrait" className="space-y-6">
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <User size={18} className="text-pink-500" />
+                  <label className="font-medium">Skin Softening: {skinSoftening}%</label>
+                </div>
+                <Slider
+                  value={[skinSoftening]}
+                  min={0}
+                  max={100}
+                  step={1}
+                  disabled={!hasImage || isUploading}
+                  onValueChange={(values) => {
+                    if (values && values.length > 0) {
+                      setSkinSoftening(values[0])
+                    }
+                  }}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <Eye size={18} className="text-blue-500" />
+                  <label className="font-medium">Eye Enhancement: {eyeEnhancement}%</label>
+                </div>
+                <Slider
+                  value={[eyeEnhancement]}
+                  min={0}
+                  max={100}
+                  step={1}
+                  disabled={!hasImage || isUploading}
+                  onValueChange={(values) => {
+                    if (values && values.length > 0) {
+                      setEyeEnhancement(values[0])
+                    }
+                  }}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <Aperture size={18} className="text-purple-500" />
+                  <label className="font-medium">Background Blur: {portraitBlur}%</label>
+                </div>
+                <Slider
+                  value={[portraitBlur]}
+                  min={0}
+                  max={100}
+                  step={1}
+                  disabled={!hasImage || isUploading}
+                  onValueChange={(values) => {
+                    if (values && values.length > 0) {
+                      setPortraitBlur(values[0])
+                    }
+                  }}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <Thermometer size={18} className="text-orange-500" />
+                  <label className="font-medium">Skin Warmth: {warmth}%</label>
+                </div>
+                <Slider
+                  value={[warmth]}
+                  min={0}
+                  max={100}
+                  step={1}
+                  disabled={!hasImage || isUploading}
+                  onValueChange={(values) => {
+                    if (values && values.length > 0) {
+                      setWarmth(values[0])
                     }
                   }}
                 />
